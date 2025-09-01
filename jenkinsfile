@@ -21,7 +21,7 @@ pipeline {
             steps {
                 script {
                     sh """
-                        podman build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+                        docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
                     """
                 }
             }
