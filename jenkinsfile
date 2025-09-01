@@ -1,64 +1,100 @@
 pipeline {
     agent any
-
+    options {
+        skipDefaultCheckout(true)
+    }
     environment {
-        REGISTRY = "http://192.168.20.104:5000"
-        IMAGE_NAME = "myapp"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        K8S_NAMESPACE = "dev"
-        KUBE_CONFIG_CRED = "idkube" // Jenkins credential ID for kubeconfig
+        DOCKER_IMAGE = "192.168.20.104:5000/flask-demo"
+        KUBECONFIG_CREDENTIALS = credentials('idkube')
     }
-
+ 
     stages {
-
-        stage('Checkout') {
+        stage('Checkout Code') {
             steps {
-                git branch: 'main', url: 'https://github.com/rajkumarkvc-cloud/my-repo.git'
+                checkout([$class: 'GitSCM', 
+                          branches: [[name: '*/main']], 
+                          userRemoteConfigs: [[
+                              url: 'https://github.com/rajkumarkvc-cloud/my-repo.git',
+                              credentialsId: 'github-ssh'
+                          ]]
+                ])
+                sh 'git checkout main'
             }
         }
-
-        stage('Build Image') {
+ 
+        stage('Commit & Push Changes before') {
             steps {
                 script {
                     sh """
-                        docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+                    git config user.email "ci-bot@myorg.com"
+                    git config user.name "CI Bot"
+                    git add k8s/deployment.yaml
+                    git commit -m "Update image to ${DOCKER_IMAGE}:${BUILD_NUMBER}" || echo "No changes to commit"
+                    git fetch origin main
+                    git rebase origin/main || true
+                    git push origin main 
                     """
                 }
             }
         }
-
-        stage('Push Image') {
+ 
+        stage('Build & Push Docker Image') {
             steps {
                 script {
                     sh """
-                        podman login ${REGISTRY} -u $REGISTRY_USER -p $REGISTRY_PASS
-                        podman push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+                    docker build -t $DOCKER_IMAGE:${BUILD_NUMBER} .
+                    docker push $DOCKER_IMAGE:${BUILD_NUMBER}
+                    docker tag $DOCKER_IMAGE:${BUILD_NUMBER} $DOCKER_IMAGE:latest
+                    docker push $DOCKER_IMAGE:latest
                     """
                 }
             }
         }
-
-        stage('Deploy to Kubernetes/OpenShift') {
+ 
+        stage('Push to Podman Registry') {
             steps {
-                withCredentials([file(credentialsId: "${KUBE_CONFIG_CRED}", variable: 'KUBECONFIG')]) {
-                    script {
-                        sh """
-                            kubectl --kubeconfig=$KUBECONFIG set image deployment/myapp-deployment \
-                                myapp=${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NAMESPACE}
-                        """
-                    }
+                script {
+                    sh 'docker push $DOCKER_IMAGE:$BUILD_NUMBER'
                 }
             }
         }
-
-    }
-
-    post {
-        success {
-            echo "CI/CD pipeline completed successfully. Image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+ 
+        stage('Update Deployment YAML') {
+            steps {
+                script {
+                    sh """
+                    sed -i 's|image: ${DOCKER_IMAGE}:.*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|' k8s/deployment.yaml
+                    """
+                }
+            }
         }
-        failure {
-            echo "Pipeline failed!"
+        stage('Commit & Push Changes after') {
+            steps {
+                script {
+                    sh """
+                    git config user.email "ci-bot@myorg.com"
+                    git config user.name "CI Bot"
+                    git add k8s/deployment.yaml
+                    git commit -m "Update image to ${DOCKER_IMAGE}:${BUILD_NUMBER}" || echo "No changes to commit"
+                    git fetch origin main
+                    git rebase origin/main || true
+                    git push origin main 
+                    """
+                }
+            }
+        }
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    sh """
+                    mkdir -p ~/.kube
+                    cp $KUBECONFIG_CREDENTIALS ~/.kube/config
+                    kubectl create namespace podman-cicd --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl apply -f k8s/
+                    kubectl rollout status deployment/flask-test1 -n podman-cicd
+                    """
+                }
+            }
         }
     }
 }
