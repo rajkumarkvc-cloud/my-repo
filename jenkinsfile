@@ -1,0 +1,64 @@
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "http://192.168.20.104:5000"
+        IMAGE_NAME = "myapp"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        K8S_NAMESPACE = "dev"
+        KUBE_CONFIG_CRED = "idkube" // Jenkins credential ID for kubeconfig
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'git@github.com:your-org/your-repo.git'
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                script {
+                    sh """
+                        podman build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+                    """
+                }
+            }
+        }
+
+        stage('Push Image') {
+            steps {
+                script {
+                    sh """
+                        podman login ${REGISTRY} -u $REGISTRY_USER -p $REGISTRY_PASS
+                        podman push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes/OpenShift') {
+            steps {
+                withCredentials([file(credentialsId: "${KUBE_CONFIG_CRED}", variable: 'KUBECONFIG')]) {
+                    script {
+                        sh """
+                            kubectl --kubeconfig=$KUBECONFIG set image deployment/myapp-deployment \
+                                myapp=${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NAMESPACE}
+                        """
+                    }
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "CI/CD pipeline completed successfully. Image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo "Pipeline failed!"
+        }
+    }
+}
