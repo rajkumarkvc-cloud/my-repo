@@ -13,6 +13,6 @@ spec:
         - name: regcred
       containers:
         - name: myapp
-          image: your-registry.example.com:5000/myorg/myapp:latest
+          image: 192.168.20.104:5000/myorg/myapp:latest
           ports:
             - containerPort: 5000
